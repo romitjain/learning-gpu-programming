@@ -1,6 +1,10 @@
-#include <cuda_runtime.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <cuda_runtime.h>
+
+/*
+A simple kernel to perform addition of two vectors
+*/
 
 __global__ void vecAddKernel(float *A_h, float *B_h, float *C_h, int n) {
     int i = threadIdx.x + blockDim.x * blockIdx.x;
@@ -47,8 +51,6 @@ int main() {
     if (error != cudaSuccess) {
         fprintf(stderr, "Kernel launch failed: %s\n", cudaGetErrorString(error));
     }
-
-    printf("here\n\n");
 
     for (int i = 0; i < N; i++) {
         printf("%0.1f\n", C_h[i]);
