@@ -81,6 +81,7 @@ int main() {
     int N = 5;
     int D_in = 4;
     int D_out = 8;
+    // N*D_out needs to be < 1024
 
     srand(42);
 
