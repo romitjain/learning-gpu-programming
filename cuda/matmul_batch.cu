@@ -104,8 +104,8 @@ int main() {
     cudaMalloc((void**) &d_W, D_in*D_out*sizeof(float));
     cudaMalloc((void**) &d_O, B*N*D_out*sizeof(float));
 
-    cudaMemcpy(d_X, X, B*N*D_in, cudaMemcpyHostToDevice);
-    cudaMemcpy(d_W, W, D_in*D_out, cudaMemcpyHostToDevice);
+    cudaMemcpy(d_X, X, B*N*D_in*sizeof(float), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_W, W, D_in*D_out*sizeof(float), cudaMemcpyHostToDevice);
 
     /*
     each block should ideally process
@@ -130,7 +130,7 @@ int main() {
     cudaDeviceSynchronize();
 
     // Copy the results back to 1D array
-    cudaMemcpy(O, d_O, B*N*D_out, cudaMemcpyDeviceToHost);
+    cudaMemcpy(O, d_O, B*N*D_out*sizeof(float), cudaMemcpyDeviceToHost);
 
     cudaError_t error = cudaGetLastError();
 
