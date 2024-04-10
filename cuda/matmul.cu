@@ -63,7 +63,7 @@ void matMulCPU(float *A_h, float *B_h, float *C_h, int n) {
 }
 
 int main() {
-    int N = 4;
+    int N = 10;
     size_t size = N*sizeof(float);
 
     // Allocate a 2D matrix in host
@@ -149,8 +149,15 @@ int main() {
         }
         printf("\n");
     }
-    free(A_h); free(B_h); free(C_h);
-    free(flat_A); free(flat_B); free(flat_C);
+
+    // Getting error in this block for freeing memory, need to debug
+    // for (int i = 0; i < N; i++) {
+    //     free(A_h[i]);
+    //     free(B_h[i]);
+    //     free(C_h[i]);
+    // }
+    // free(A_h); free(B_h); free(C_h);
+    // free(flat_A); free(flat_B); free(flat_C);
     cudaFree(A_d); cudaFree(B_d); cudaFree(C_d);
 
     return 0;
