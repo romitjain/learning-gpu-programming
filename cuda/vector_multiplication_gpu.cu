@@ -34,7 +34,7 @@ int main() {
     cudaMalloc((void **) &d_D, size);
 
     for (int i=0; i<N; i++) {
-        // A[i] = i+1;
+        A[i] = i+1;
         B[i] = i-1;
     }
 
