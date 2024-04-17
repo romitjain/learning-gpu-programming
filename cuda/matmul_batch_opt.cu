@@ -57,6 +57,7 @@ __global__ void matMulTiled(
     int D_out,
     int SMALL_N
 ) {
+    extern __shared__ float sharedSum[];
 
     int tx = threadIdx.x;
     int ty = threadIdx.y;
@@ -64,18 +65,44 @@ __global__ void matMulTiled(
 
     int width = blockDim.x;
     int height = blockDim.y;
+    int depth = blockDim.z;
 
     int offset = width*ty + tx;
+    int tile_offset = tz*SMALL_N;
+    int shared_offset = offset + (tz * width * height);
 
-    if (offset < N*N) {
-        __shared__ float sum;
+    sharedSum[shared_offset] = 0.0;
+    __syncthreads();
 
-        for (int i = 0; i < SMALL_N; i++) {
-            sum += X[width*ty + i] * W[tx + height*i];
-        }
+    // if (offset < SMALL_N) {
+    float sum = 0.0;
 
-        OO[offset] = sum;
+    for (int i = 0; i < SMALL_N; i++) {
+        int row_idx = width*ty + i;
+        int col_idx = tx + width*i;
+        sum += X[tile_offset + row_idx] * W[(tile_offset*width) + col_idx];
+        // printf("Summing: (%d, %d, %d) X[%d], W[%d]\n", tx, ty, tz, tile_offset + row_idx, (tile_offset*width) + col_idx);
     }
+
+    sharedSum[shared_offset] = sum;
+
+    // printf(
+    //     "Analyzing: tx: %d, ty: %d , tz: %d, offset: %d, tile_offset: %d, sum: %0.1f\n",
+    //     tx, ty, tz, offset, tile_offset, sum
+    // );
+
+    // }
+
+    __syncthreads();
+
+    int j = offset;
+    float temp = 0.0;
+    for (int i = 0; i < depth; i++) {
+        j += (i * width * height);
+        temp += sharedSum[j];
+    }
+
+    OO[offset] = temp;
 
 }
 
@@ -132,9 +159,10 @@ inline int cdiv(int num, int den) {
 
 int main() {
     int B = 1;
-    int N = 32;
-    int D_in = 32;
-    int D_out = 32;
+    int N = 8;
+    int D_in = 8;
+    int D_out = 8;
+    int SMALL_N = 4;
     // N*D_out needs to be < 1024
 
     srand(42);
@@ -158,7 +186,7 @@ int main() {
     matMulCPU(X, W, OC, N);
     gettimeofday(&end_cpu, NULL);
     float micros = end_cpu.tv_usec - start_cpu.tv_usec;
-    printf("CPU version: %0.6f seconds\n", micros/1000);
+    printf("CPU version: %0.6fms\n", micros/1000);
 
     // Allocating memory for flattened array in device
     float *d_X, *d_W, *d_O;
@@ -170,28 +198,60 @@ int main() {
     cudaMemcpy(d_X, X, B*N*D_in*sizeof(float), cudaMemcpyHostToDevice);
     cudaMemcpy(d_W, W, D_in*D_out*sizeof(float), cudaMemcpyHostToDevice);
 
-    dim3 threads_per_block(N, N);
+    // dim3 threads_per_block(N, N);
+    // dim3 number_of_blocks(B);
+
+    // cudaEvent_t start, stop;
+    // cudaEventCreate(&start); cudaEventCreate(&stop);
+    // cudaEventRecord(start, 0);
+
+    // matMul<<<number_of_blocks, threads_per_block>>>(
+    //     d_X,
+    //     d_W,
+    //     d_O,
+    //     B,
+    //     N,
+    //     D_in,
+    //     D_out
+    // );
+
+    // cudaDeviceSynchronize();
+    // cudaEventRecord(stop, 0);
+    // cudaEventSynchronize(stop);
+
+    // float milliseconds = 0;
+    // cudaEventElapsedTime(&milliseconds, start, stop);
+
+    // printf("\nGPU version: %0.6fms\n", milliseconds);
+
+    // // Copy the results back to 1D array
+    // cudaMemcpy(O, d_O, B*N*D_out*sizeof(float), cudaMemcpyDeviceToHost);
+
+    // cudaError_t error = cudaGetLastError();
+
+    // if (error != cudaSuccess) {
+    //     fprintf(stderr, "Kernel launch failed: %s\n", cudaGetErrorString(error));
+    // }
+
+    dim3 threads_per_block(N, N, N/SMALL_N);
     dim3 number_of_blocks(B);
 
     cudaEvent_t start, stop;
-
-    cudaEventCreate(&start);
-    cudaEventCreate(&stop);
-
+    cudaEventCreate(&start); cudaEventCreate(&stop);
     cudaEventRecord(start, 0);
 
-    matMul<<<number_of_blocks, threads_per_block>>>(
+    matMulTiled<<<number_of_blocks, threads_per_block, N/SMALL_N*B*N*D_out*sizeof(float)>>>(
         d_X,
         d_W,
         d_O,
         B,
         N,
         D_in,
-        D_out
+        D_out,
+        SMALL_N
     );
 
     cudaDeviceSynchronize();
-
     cudaEventRecord(stop, 0);
     cudaEventSynchronize(stop);
 
@@ -200,14 +260,7 @@ int main() {
 
     printf("\nGPU version: %0.6fms\n", milliseconds);
 
-    // Copy the results back to 1D array
     cudaMemcpy(O, d_O, B*N*D_out*sizeof(float), cudaMemcpyDeviceToHost);
-
-    cudaError_t error = cudaGetLastError();
-
-    if (error != cudaSuccess) {
-        fprintf(stderr, "Kernel launch failed: %s\n", cudaGetErrorString(error));
-    }
 
     for (int i = 0;i<N*N; i++) {
         if (OC[i] != O[i]) {
@@ -215,10 +268,10 @@ int main() {
         }
     }
 
-    // display_3dmat("X", X, B, N, D_in);
-    // display_2dmat("W", W, D_in, D_out);
-    // display_3dmat("O", O, B, N, D_out);
-    // display_3dmat("OC", OC, B, N, D_out);
+    display_3dmat("X", X, B, N, D_in);
+    display_2dmat("W", W, D_in, D_out);
+    display_3dmat("O", O, B, N, D_out);
+    display_3dmat("OC", OC, B, N, D_out);
 
     free(X); free(W); free(O); free(OC);
     cudaFree(d_X); cudaFree(d_W); cudaFree(d_O);
