@@ -13,6 +13,9 @@ def swizzle_kernel(
     output_ptr,
     group_size: tl.constexpr
 ):
+    """
+    Implementation inspired from CUDA MODE lecture. This uses as inbuilt swizzle function.
+    """
     pidy = tl.program_id(axis=0)
     pidx = tl.program_id(axis=1)
 
@@ -32,6 +35,41 @@ def swizzle_kernel(
     tl.store(output_ptr + i + j, data)
 
 
+@triton.jit
+def swizzle_alt_kernel(
+    input_ptr,
+    c_ptr,
+    stride_cm,
+    stride_cn,
+    M,
+    N,
+    BLOCK_SIZE_M: tl.constexpr,
+    BLOCK_SIZE_N: tl.constexpr,
+    GROUP_SIZE_M: tl.constexpr
+):
+    """
+    Implementation similar to what is provided here:
+    https://triton-lang.org/main/getting-started/tutorials/03-matrix-multiplication.html#sphx-glr-getting-started-tutorials-0a3-matrix-multiplication-py
+    """
+    pid = tl.program_id(axis=0)
+    num_pid_m = tl.cdiv(M, BLOCK_SIZE_M)
+    num_pid_n = tl.cdiv(N, BLOCK_SIZE_N)
+    num_pid_in_group = GROUP_SIZE_M * num_pid_n
+    group_id = pid // num_pid_in_group
+    first_pid_m = group_id * GROUP_SIZE_M
+    group_size_m = min(num_pid_m - first_pid_m, GROUP_SIZE_M)
+    pid_m = first_pid_m + (pid % group_size_m)
+    pid_n = (pid % num_pid_in_group) // group_size_m
+
+    data = tl.load(input_ptr + c_ptrs   )
+
+    offs_cm = pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
+    offs_cn = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
+    c_ptrs = c_ptr + stride_cm * offs_cm[:, None] + stride_cn * offs_cn[None, :]
+    c_mask = (offs_cm[:, None] < M) & (offs_cn[None, :] < N)
+    tl.store(c_ptrs, data, c_mask)
+
+
 def swizzle_triton(
     input: torch.Tensor
 ) -> torch.Tensor:
@@ -49,6 +87,31 @@ def swizzle_triton(
 
     return output
 
+
+def swizzle_alt_triton(
+    input: torch.Tensor
+) -> torch.Tensor:
+    assert input.is_cuda, f"Input matrix is not on GPU, input"
+    assert input.is_contiguous(), f"Input is not contaguous"
+
+    output = torch.ones_like(input)
+
+    grid = (output.shape[0]*output.shape[1],)
+    swizzle_alt_kernel[grid](
+        input_ptr=input,
+        c_ptr=output,
+        stride_cm=output.stride(0),
+        stride_cn=output.stride(1),
+        M=output.shape[0],
+        N=output.shape[1],
+        BLOCK_SIZE_M=1,
+        BLOCK_SIZE_N=1,
+        GROUP_SIZE_M=3
+    )
+
+    return output
+
+
 if __name__ == '__main__':
     m, n = 7, 5
     a = torch.arange(m*n).view(m, n).to('cuda', torch.float32)
@@ -56,4 +119,7 @@ if __name__ == '__main__':
     o = swizzle_triton(a)
 
     print(f'Input matrix:\n{a}')
+    print(f'Output matrix:\n{o}')
+
+    o = swizzle_alt_triton(a)
     print(f'Output matrix:\n{o}')
