@@ -1,3 +1,5 @@
+# From: https://courses.cs.washington.edu/courses/cse599m/23sp/notes/flashattn.pdf
+
 from math import sqrt
 import torch
 import torch.nn as nn
