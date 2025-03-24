@@ -1,19 +1,16 @@
 // nvcc -o softmax.o softmax.cu utils.c -diag-suppress 2464 && ./softmax.o
 
-#include "utils.h"
+#include "../utils.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <cfloat>
 #include <cuda_runtime.h>
+#include <torch/extension.h>
 
 /*
 Batched softmax
 B x N x V
 */
-
-#ifndef BLOCKDIM_SMALL
-#define BLOCKDIM_SMALL 1024
-#endif
 
 #define cudaErr(ans) { gpuAssert((ans), __FILE__, __LINE__); }
 inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort=true)
@@ -90,7 +87,7 @@ __global__ void softMax(
     // Same for finding the denominator
     for (int i = tx; i < V; i += blockDim.x)
     {
-        sumVal = sumVal + __expf(data[row_offset + tx] - maxVal);
+        sumVal = sumVal + __expf(data[row_offset + i] - maxVal);
     }
     for (int offset = 16; offset > 0; offset /=2)
     {
@@ -98,6 +95,23 @@ __global__ void softMax(
     }
 
     out[row_offset + tx] = __expf(data[row_offset + tx] - maxVal)/sumVal;
+}
+
+void launch_softmax(torch::Tensor data, torch::Tensor out)
+{
+    const int B = data.size(0);
+    const int N = data.size(1);
+    const int V = data.size(2);
+
+    const int threads = 32;
+    dim3 block(threads, N, 1);
+    dim3 grid(B, 1, 1);
+
+    softMax<<<grid, block>>>(
+        data.data_ptr<float>(),
+        out.data_ptr<float>(),
+        B, N, V
+    );
 }
 
 int main() {
