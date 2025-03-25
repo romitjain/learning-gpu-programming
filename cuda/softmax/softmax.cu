@@ -59,11 +59,12 @@ __global__ void softMax(
     int V
 ) 
 {
-    if (threadIdx.y >= N)
+    int row = blockDim.y * blockIdx.y + threadIdx.y;
+    if (row >= N)
         return;
 
     int batch = blockIdx.x;
-    int row_offset = batch * N * V + V * threadIdx.y;
+    int row_offset = batch * N * V + V * row;
 
     // Manually fixing the stride
     int tx = threadIdx.x;
@@ -103,9 +104,11 @@ void launch_softmax(torch::Tensor data, torch::Tensor out)
     const int N = data.size(1);
     const int V = data.size(2);
 
-    const int threads = 32;
-    dim3 block(threads, N, 1);
-    dim3 grid(B, 1, 1);
+    const int THREADS_X = 32;
+    const int THREADS_Y = 8;
+
+    dim3 block(THREADS_X, THREADS_Y, 1);
+    dim3 grid(B, (N + THREADS_Y - 1) / THREADS_Y, 1);
 
     softMax<<<grid, block>>>(
         data.data_ptr<float>(),

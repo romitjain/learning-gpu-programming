@@ -21,7 +21,7 @@ print("Cuda kernel test passed!")
 @triton.testing.perf_report(
 triton.testing.Benchmark(
         x_names=['N'],
-        x_vals=[2 ** i for i in range(2, 8)],
+        x_vals=[2 ** i for i in range(0, 19)],
         line_arg='provider',
         line_vals=[
             'cuda',
@@ -35,7 +35,7 @@ triton.testing.Benchmark(
         ylabel="GB/s",
         plot_name="Performance",
         # values for function arguments not in `x_names` and `y_name`
-        args={'B': 4, 'V': 32},
+        args={'B': 32, 'V': 32},
     ))
 def benchmark(B, N, V, provider):
     x = torch.randn(B, N, V, device=device, dtype=torch.float32)
@@ -45,11 +45,11 @@ def benchmark(B, N, V, provider):
 
     if provider == 'cuda':
          ms, min_ms, max_ms = triton.testing.do_bench(
-            lambda: softmax_cuda_kernel.softmax_forward(x, output_tensor), quantiles=quantiles
+            lambda: softmax_cuda_kernel.softmax_forward(x, output_tensor), quantiles=quantiles, warmup=50, rep=200
         )
     if provider == 'torch':
         ms, min_ms, max_ms = triton.testing.do_bench(
-            lambda: torch.nn.functional.softmax(x, dim=-1), quantiles=quantiles
+            lambda: torch.nn.functional.softmax(x, dim=-1), quantiles=quantiles, warmup=50, rep=200
         )
 
     def gbps(ms): return 2 * x.nelement() * x.element_size() * 1e-9 / (ms * 1e-3)
