@@ -13,7 +13,7 @@ softmax_cuda_kernel = torch.utils.cpp_extension.load(
     extra_cuda_cflags=["-O2 -diag-suppress 2464"]
 )
 
-x = torch.randn((2, 64, 1000), device=device)
+x = torch.randn((2, 64, 1024), device=device)
 out_cuda = torch.empty_like(x)
 softmax_cuda_kernel.softmax_forward(x, out_cuda, 2)
 out_torch = torch.nn.functional.softmax(x, dim=-1)

@@ -10,6 +10,12 @@
 /*
 Batched softmax
 B x N x V
+
+Only 4 tricks are used to reach PyTorch performance:
+1. Use warp level reduction to find the max value in a warp.
+2. Then use block level reduction to find the global max value
+3. Use float4 values to load 4 floats at a time and store 4 floats at a time
+4. Use pragmas to unroll the loops
 */
 
 #define cudaErr(ans) { gpuAssert((ans), __FILE__, __LINE__); }
@@ -128,9 +134,13 @@ __global__ void multiWarpSoftMax(
     // while making sure that memory access is coalesced
     float local_max = -FLT_MAX;
 #pragma unroll 8
-    for (int i = tx; i < V; i += blockDim.x)
+    for (int i = tx; i < V/4; i += blockDim.x)
     {
-        local_max = fmaxf(data[row_offset + i], local_max);
+        float4 val = reinterpret_cast<float4 *>(&data[row_offset + i * 4])[0];
+        local_max = fmaxf(val.x, local_max);
+        local_max = fmaxf(val.y, local_max);
+        local_max = fmaxf(val.z, local_max);
+        local_max = fmaxf(val.w, local_max);
     }
 
     // Step 2:Now we have a warp which has max val - do register level reduction
@@ -176,9 +186,13 @@ __global__ void multiWarpSoftMax(
     // Same for finding the denominator
     float local_sum = 0.0;
 #pragma unroll 8
-    for (int i = tx; i < V; i += blockDim.x)
+    for (int i = tx; i < V/4; i += blockDim.x)
     {
-        local_sum = local_sum + __expf(data[row_offset + i] - global_max);
+        float4 val = reinterpret_cast<float4 *>(&data[row_offset + i * 4])[0];
+        local_sum = local_sum + __expf(val.x - global_max);
+        local_sum = local_sum + __expf(val.y - global_max);
+        local_sum = local_sum + __expf(val.z - global_max);
+        local_sum = local_sum + __expf(val.w - global_max);
     }
 #pragma unroll 8
     for (int offset = 16; offset > 0; offset /= 2)
@@ -212,9 +226,14 @@ __global__ void multiWarpSoftMax(
     global_sum = warp_sum[0];
 
 #pragma unroll 8
-    for (int i = tx; i < V; i += blockDim.x)
+    for (int i = tx; i < V/4; i += blockDim.x)
     {
-        out[row_offset + i] = __expf(data[row_offset + i] - global_max) / global_sum;
+        float4 val = reinterpret_cast<float4 *>(&data[row_offset + i * 4])[0];
+        val.x = __expf(val.x - global_max) / global_sum;
+        val.y = __expf(val.y - global_max) / global_sum;
+        val.z = __expf(val.z - global_max) / global_sum;
+        val.w = __expf(val.w - global_max) / global_sum;
+        reinterpret_cast<float4 *>(&out[row_offset + i * 4])[0] = val;
     }
 }
 
@@ -269,11 +288,6 @@ void launch_softmax(torch::Tensor data, torch::Tensor out, int version)
         }
         dim3 block(THREADS_X, THREADS_Y, 1);
         dim3 grid(B, (N + THREADS_Y - 1) / THREADS_Y, 1);
-
-        // printf(
-        //     "Starting with block dim: (%d, %d) and grid dim (%d, %d)",
-        //     THREADS_X, THREADS_Y, B, (N + THREADS_Y - 1) / THREADS_Y
-        // );
 
         multiWarpSoftMax<<<grid, block>>>(
             data.data_ptr<float>(),
