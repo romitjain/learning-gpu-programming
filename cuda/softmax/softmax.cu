@@ -6,6 +6,7 @@
 #include <cfloat>
 #include <cuda_runtime.h>
 #include <torch/extension.h>
+#include <cooperative_groups.h>
 
 /*
 Batched softmax
@@ -16,6 +17,7 @@ Only 4 tricks are used to reach PyTorch performance:
 2. Then use block level reduction to find the global max value
 3. Use float4 values to load 4 floats at a time and store 4 floats at a time
 4. Use pragmas to unroll the loops
+5. Suggested by GPT: Use cta.sync() and __restrict__ but it doesn't give any performance boost
 */
 
 #define cudaErr(ans) { gpuAssert((ans), __FILE__, __LINE__); }
@@ -108,12 +110,15 @@ __global__ void singleWarpSoftMax(
 }
 
 __global__ void multiWarpSoftMax(
-    float *data,
-    float *out,
+    float *__restrict__ data,
+    float *__restrict__ out,
     int B,
     int N,
     int V)
 {
+    namespace cg = cooperative_groups;
+    cg::thread_block cta = cg::this_thread_block();
+
     int row = blockDim.y * blockIdx.y + threadIdx.y;
     if (row >= N) return;
 
@@ -158,7 +163,7 @@ __global__ void multiWarpSoftMax(
         warp_max[tx / 32] = local_max;
     }
 
-    __syncthreads();
+    cta.sync();
 
     // Step 4: Reduce the max value across the shared memory
     // I'll do it with a single warp, but then I will first have to load the values
@@ -180,7 +185,7 @@ __global__ void multiWarpSoftMax(
     {
         warp_max[0] = global_max;
     }
-    __syncthreads();
+    cta.sync();
     global_max = warp_max[0];
 
     // Same for finding the denominator
@@ -203,7 +208,7 @@ __global__ void multiWarpSoftMax(
     {
         warp_sum[tx / 32] = local_sum;
     }
-    __syncthreads();
+    cta.sync();
 
     float global_sum = 0.0;
     if (tx < num_warps)
@@ -222,7 +227,7 @@ __global__ void multiWarpSoftMax(
     {
         warp_sum[0] = global_sum;
     }
-    __syncthreads();
+    cta.sync();
     global_sum = warp_sum[0];
 
 #pragma unroll 8
