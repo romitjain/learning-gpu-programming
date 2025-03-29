@@ -51,7 +51,7 @@ __global__ void naivesoftMax(
     }
 }
 
-__global__ void softMax(
+__global__ void singleWarpSoftMax(
     float* data,
     float* out,
     int B,
@@ -95,26 +95,193 @@ __global__ void softMax(
         sumVal = sumVal + __shfl_xor_sync(0xffffffff, sumVal, offset, 32);
     }
 
-    out[row_offset + tx] = __expf(data[row_offset + tx] - maxVal)/sumVal;
+    for (int i = tx; i < V; i += blockDim.x)
+    {
+    	out[row_offset + i] = __expf(data[row_offset + i] - maxVal)/sumVal;
+    }
 }
 
-void launch_softmax(torch::Tensor data, torch::Tensor out)
+__global__ void multiWarpSoftMax(
+    float *data,
+    float *out,
+    int B,
+    int N,
+    int V)
+{
+    int row = blockDim.y * blockIdx.y + threadIdx.y;
+    if (row >= N) return;
+
+    int batch = blockIdx.x;
+    int row_offset = batch * N * V + V * row;
+    
+    // This is the shared memory where each warp will store the max value
+    int num_warps = (blockDim.x + 31) / 32;
+    extern __shared__ float sdata[];
+    float *warp_max = sdata;
+    float *warp_sum = &sdata[num_warps];
+
+    int tx = threadIdx.x;
+
+    // Step 1: This value is stored in register
+    // Each thread loops the array
+    // strided by warp size and finds max
+    // while making sure that memory access is coalesced
+    float local_max = -FLT_MAX;
+#pragma unroll 8
+    for (int i = tx; i < V; i += blockDim.x)
+    {
+        local_max = fmaxf(data[row_offset + i], local_max);
+    }
+
+    // Step 2:Now we have a warp which has max val - do register level reduction
+    // This happens in register cache: https://developer.nvidia.com/blog/register-cache-warp-cuda/
+#pragma unroll 8
+    for (int offset = 16; offset > 0; offset /= 2)
+    {
+        local_max = fmaxf(local_max, __shfl_xor_sync(0xffffffff, local_max, offset, 32));
+    }
+
+    // Step 3: Store the max value in shared memory, we only need to store one value per warp
+    // Hence mod 32 check
+    if (tx % 32 == 0)
+    {
+        warp_max[tx / 32] = local_max;
+    }
+
+    __syncthreads();
+
+    // Step 4: Reduce the max value across the shared memory
+    // I'll do it with a single warp, but then I will first have to load the values
+    // from the shared memory to the register
+    float global_max = -FLT_MAX;
+    if (tx < num_warps)
+    {
+        global_max = warp_max[tx];
+    }
+    if (tx < 32)
+    {
+#pragma unroll 8
+        for (int offset = 16; offset > 0; offset /= 2)
+        {
+            global_max = fmaxf(global_max, __shfl_xor_sync(0xffffffff, global_max, offset, 32));
+        }
+    }
+    if (tx == 0)
+    {
+        warp_max[0] = global_max;
+    }
+    __syncthreads();
+    global_max = warp_max[0];
+
+    // Same for finding the denominator
+    float local_sum = 0.0;
+#pragma unroll 8
+    for (int i = tx; i < V; i += blockDim.x)
+    {
+        local_sum = local_sum + __expf(data[row_offset + i] - global_max);
+    }
+#pragma unroll 8
+    for (int offset = 16; offset > 0; offset /= 2)
+    {
+        local_sum = local_sum + __shfl_xor_sync(0xffffffff, local_sum, offset, 32);
+    }
+    if (tx % 32 == 0)
+    {
+        warp_sum[tx / 32] = local_sum;
+    }
+    __syncthreads();
+
+    float global_sum = 0.0;
+    if (tx < num_warps)
+    {
+        global_sum = warp_sum[tx];
+    }
+    if (tx < 32)
+    {
+#pragma unroll 8
+        for (int offset = 16; offset > 0; offset /= 2)
+        {
+            global_sum = global_sum + __shfl_xor_sync(0xffffffff, global_sum, offset, 32);
+        }
+    }
+    if (tx == 0)
+    {
+        warp_sum[0] = global_sum;
+    }
+    __syncthreads();
+    global_sum = warp_sum[0];
+
+#pragma unroll 8
+    for (int i = tx; i < V; i += blockDim.x)
+    {
+        out[row_offset + i] = __expf(data[row_offset + i] - global_max) / global_sum;
+    }
+}
+
+
+void launch_softmax(torch::Tensor data, torch::Tensor out, int version)
 {
     const int B = data.size(0);
     const int N = data.size(1);
     const int V = data.size(2);
 
-    const int THREADS_X = 32;
-    const int THREADS_Y = 8;
+    if (version == 0)
+    {
+        dim3 block(32, 1, 1);
+        dim3 grid(B, N, 1);
 
-    dim3 block(THREADS_X, THREADS_Y, 1);
-    dim3 grid(B, (N + THREADS_Y - 1) / THREADS_Y, 1);
+        naivesoftMax<<<grid, block>>>(
+            data.data_ptr<float>(),
+            out.data_ptr<float>(),
+            B, N, V
+        );
+    }
+    else if (version == 1)
+    {
+        const int THREADS_X = 32;
+        const int THREADS_Y = 8;
 
-    softMax<<<grid, block>>>(
-        data.data_ptr<float>(),
-        out.data_ptr<float>(),
-        B, N, V
-    );
+        dim3 block(THREADS_X, THREADS_Y, 1);
+        dim3 grid(B, (N + THREADS_Y - 1) / THREADS_Y, 1);
+
+        singleWarpSoftMax<<<grid, block>>>(
+            data.data_ptr<float>(),
+            out.data_ptr<float>(),
+            B, N, V
+        );
+    }
+    else if (version == 2)
+    {
+        int THREADS_X = 32;
+
+        if (V > 512 && V <= 2048)
+        {
+            THREADS_X *= 4;
+        }
+        else if (V > 2048)
+        {
+            THREADS_X *= 32;
+        }
+
+        int THREADS_Y = 8;
+        if (V > 512) {
+            THREADS_Y = ceil(1024 / THREADS_X);
+        }
+        dim3 block(THREADS_X, THREADS_Y, 1);
+        dim3 grid(B, (N + THREADS_Y - 1) / THREADS_Y, 1);
+
+        // printf(
+        //     "Starting with block dim: (%d, %d) and grid dim (%d, %d)",
+        //     THREADS_X, THREADS_Y, B, (N + THREADS_Y - 1) / THREADS_Y
+        // );
+
+        multiWarpSoftMax<<<grid, block>>>(
+            data.data_ptr<float>(),
+            out.data_ptr<float>(),
+            B, N, V
+        );
+    }
+
 }
 
 int main() {
@@ -144,7 +311,7 @@ int main() {
     dim3 block_size(32, N, 1);
     dim3 grid(B, 1, 1);
 
-    softMax<<<grid, block_size>>>(
+    singleWarpSoftMax<<<grid, block_size>>>(
         d_data,
         d_out,
         B,
