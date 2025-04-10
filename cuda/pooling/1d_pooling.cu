@@ -6,16 +6,17 @@ Optimizations
 1. Load the data required by block in SMEM in the start
 2. Send 1/k ahead of time
 3. Pragma unroll
+4. Vectorized loads
 */
 
 __global__ void pooling_1d(
-    float *__restrict__ input,
+    const float *__restrict__ input,
     float *__restrict__ output,
-    int k,
-    int s,
-    int p,
-    size_t in_size,
-    size_t out_size,
+    const int k,
+    const int s,
+    const int p,
+    const size_t in_size,
+    const size_t out_size,
     float inv_k)
 {
     // The strategy is to load the data from HBM to SMEM
@@ -27,29 +28,51 @@ __global__ void pooling_1d(
     int num_elements_to_load = s * (blockDim.x - 1) + k;
 
     int tidx = threadIdx.x;
-    for (int i = tidx; i < num_elements_to_load; i += blockDim.x)
+
+#pragma unroll
+    for (int i = tidx; i < num_elements_to_load / 4; i += blockDim.x)
     {
-        int gmem_idx = gmem_block_read_start + i;
-        if (gmem_idx >= 0 && gmem_idx < in_size)
+        int index = gmem_block_read_start + i * 4;
+        if ((index >= 0) && ((index % 4) == 0) && ((index + 3) < in_size))
         {
-            sh_input[i] = input[gmem_idx];
+            float4 val = reinterpret_cast<const float4 *>(&input[index])[0];
+            sh_input[i * 4 + 0] = val.x;
+            sh_input[i * 4 + 1] = val.y;
+            sh_input[i * 4 + 2] = val.z;
+            sh_input[i * 4 + 3] = val.w;
         }
         else
         {
-            sh_input[i] = 0.0f;
+#pragma unroll
+            // Fallback: load element-by-element.
+            for (int j = 0; j < 4; ++j)
+            {
+                int idx = index + j;
+                sh_input[i * 4 + j] = (idx >= 0 && idx < in_size) ? input[idx] : 0.0f;
+            }
         }
+    }
+
+    int remaining_loads = 4 * (num_elements_to_load / 4);
+
+#pragma unroll
+    for (int i = remaining_loads + tidx; i < num_elements_to_load; i += blockDim.x)
+    {
+        int idx = gmem_block_read_start + i;
+        sh_input[i] = (idx >= 0 && idx < in_size) ? input[idx] : 0.0f;
     }
 
     __syncthreads();
 
     int out_idx = block_start + tidx;
-    if (out_idx >= out_size) return;
+    if (out_idx >= out_size)
+        return;
 
     float accum = 0.0;
 
     int shmem_start_idx_for_thread = (s * out_idx - p) - gmem_block_read_start;
 
-#pragma unroll 8
+#pragma unroll
     for (int i = 0; i < k; ++i)
     {
         int current_sh_idx = shmem_start_idx_for_thread + i;
@@ -61,18 +84,15 @@ __global__ void pooling_1d(
 
 // Note: input, output are all device pointers to float32 arrays
 extern "C" void solution(
-    const float* input, int kernel_size, int stride, int padding, float* output, size_t H
-) {
-    size_t output_size = floor((H + 2 * padding - kernel_size)/stride) + 1;
-    float *d_input, *d_output;
+    const float *input, int kernel_size, int stride, int padding, float *output, size_t H)
+{
+    size_t output_size = floor((H + 2 * padding - kernel_size) / stride) + 1;
+    int threads_x = 128;
+    if (H == 2097152 || H == 4194304)
+    {
+        threads_x = 512;
+    }
 
-    cudaMalloc((void **) &d_input, H * sizeof(float));
-    cudaMalloc((void **) &d_output, output_size * sizeof(float));
-
-    cudaMemcpy(d_input, input, H * sizeof(float), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_output, output, output_size * sizeof(float), cudaMemcpyHostToDevice);
-
-    int threads_x = 1024;
     int blocks_x = (output_size + threads_x - 1) / threads_x;
 
     dim3 block_size(threads_x, 1, 1);
@@ -80,11 +100,11 @@ extern "C" void solution(
 
     int shmem_elems_per_block = stride * (threads_x - 1) + kernel_size;
     size_t shmem_bytes = shmem_elems_per_block * sizeof(float);
-    float inv_k = 1.0f/(float)(kernel_size);
+    float inv_k = 1.0f / (float)(kernel_size);
 
     pooling_1d<<<grid, block_size, shmem_bytes>>>(
-        d_input,
-        d_output,
+        input,
+        output,
         kernel_size,
         stride,
         padding,
@@ -93,19 +113,32 @@ extern "C" void solution(
         inv_k);
 
     cudaError_t error = cudaGetLastError();
-    if (error != cudaSuccess) {
+    if (error != cudaSuccess)
+    {
         fprintf(stderr, "Kernel launch failed: %s\n", cudaGetErrorString(error));
     }
-
-    cudaMemcpy(output, d_output, output_size*sizeof(float), cudaMemcpyDeviceToHost);
 }
 
-int main() {
-    float input[] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10};
-    float output[10];
+int main()
+{
+    int H = 20;
+    int kernel_size = 7;
+    int stride = 4;
+    int padding = 3;
 
-    solution(input, 3, 1, 0, output, 10);
-    for (int i = 0; i < 10; i++) {
+    float input[H];
+    // Fill random
+    for (int i = 0; i < H; i++)
+    {
+        input[i] = rand() % 10;
+    }
+
+    int output_size = floor((H + 2 * padding - kernel_size) / stride) + 1;
+    float output[output_size];
+
+    solution(input, kernel_size, stride, padding, output, H);
+    for (int i = 0; i < 10; i++)
+    {
         printf("%f ", output[i]);
     }
 
