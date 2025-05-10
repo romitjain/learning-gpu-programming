@@ -35,15 +35,11 @@ __global__ void pooling_1d(
         int index = gmem_block_read_start + i * 4;
         if ((index >= 0) && ((index % 4) == 0) && ((index + 3) < in_size))
         {
-            float4 val = reinterpret_cast<const float4 *>(&input[index])[0];
-            sh_input[i * 4 + 0] = val.x;
-            sh_input[i * 4 + 1] = val.y;
-            sh_input[i * 4 + 2] = val.z;
-            sh_input[i * 4 + 3] = val.w;
+            ((float4 *)sh_input)[i] = reinterpret_cast<const float4 *>(&input[index])[0];
         }
         else
         {
-#pragma unroll
+#pragma unroll 4
             // Fallback: load element-by-element.
             for (int j = 0; j < 4; ++j)
             {
@@ -72,7 +68,7 @@ __global__ void pooling_1d(
 
     int shmem_start_idx_for_thread = (s * out_idx - p) - gmem_block_read_start;
 
-#pragma unroll
+#pragma unroll 8
     for (int i = 0; i < k; ++i)
     {
         int current_sh_idx = shmem_start_idx_for_thread + i;
