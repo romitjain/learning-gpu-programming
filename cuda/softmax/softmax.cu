@@ -30,6 +30,10 @@ inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort=t
    }
 }
 
+
+/*
+This is the most naive way of doing Softmax. Just implementing the algorithm in CUDA.
+*/
 __global__ void naivesoftMax(
     float *data,
     float *out,
@@ -59,6 +63,9 @@ __global__ void naivesoftMax(
     }
 }
 
+/*
+This is implementing SoftMax using only a single warp. This is not utilizing the hardware to the maximum.
+*/
 __global__ void singleWarpSoftMax(
     float* data,
     float* out,
@@ -109,6 +116,10 @@ __global__ void singleWarpSoftMax(
     }
 }
 
+
+/*
+This is the most optimized version which is using multiple warps. The number of warps are decided based on the input size.
+*/
 __global__ void multiWarpSoftMax(
     float *__restrict__ data,
     float *__restrict__ out,
