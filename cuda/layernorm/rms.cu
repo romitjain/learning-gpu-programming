@@ -61,7 +61,7 @@ __global__ void singleWarpRMS(
     }
 }
 
-void launch_softmax(
+void launch_rms(
     torch:: Tensor data,
     torch::Tensor out,
     float eps,
@@ -133,4 +133,9 @@ int main() {
     cudaFree(d_data);
 
     return 0;
+}
+
+PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
+{
+    m.def("rms_forward", &launch_rms, "RMSNorm (CUDA)");
 }

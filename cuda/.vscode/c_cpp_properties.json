@@ -5,6 +5,7 @@
             "includePath": [
                 "${workspaceFolder}/**",
                 "/home/romit/miniconda3/include",
+                "/home/romit/miniconda3/envs/cu12.8/include/python3.12",
                 "/home/romit/miniconda3/envs/cu12.8/lib/python3.12/site-packages/torch/include",
                 "/home/romit/miniconda3/envs/cu12.8/lib/python3.12/site-packages/torch/include/torch/csrc/api/include"
             ],
