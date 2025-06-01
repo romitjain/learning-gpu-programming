@@ -32,38 +32,6 @@ inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort=t
 
 
 /*
-This is the most naive way of doing Softmax. Just implementing the algorithm in CUDA.
-*/
-__global__ void naivesoftMax(
-    float *data,
-    float *out,
-    int B,
-    int N,
-    int V)
-{
-
-    if (threadIdx.y >= N) return;
-
-    int batch = blockIdx.x;
-    int row_offset = batch * N * V + V * threadIdx.y;
-    int out_offset = batch * N * V + V * threadIdx.y + threadIdx.x;
-
-    int ty = threadIdx.y;
-
-    if (ty < N)
-    {
-        float row_local_max = 0;
-
-        for (int i = 0; i < V; i++)
-        {
-            row_local_max = fmaxf(data[row_offset + i], row_local_max);
-        }
-
-        out[out_offset] = row_local_max;
-    }
-}
-
-/*
 This is implementing SoftMax using only a single warp. This is not utilizing the hardware to the maximum.
 */
 __global__ void singleWarpSoftMax(
@@ -260,18 +228,7 @@ void launch_softmax(torch::Tensor data, torch::Tensor out, int version)
     const int N = data.size(1);
     const int V = data.size(2);
 
-    if (version == 0)
-    {
-        dim3 block(32, 1, 1);
-        dim3 grid(B, N, 1);
-
-        naivesoftMax<<<grid, block>>>(
-            data.data_ptr<float>(),
-            out.data_ptr<float>(),
-            B, N, V
-        );
-    }
-    else if (version == 1)
+    if (version == 1)
     {
         const int THREADS_X = 32;
         const int THREADS_Y = 8;
