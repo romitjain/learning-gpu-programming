@@ -33,7 +33,7 @@ __global__ void singleWarpRMS(
 {
     int row_num = blockDim.y * blockIdx.y + threadIdx.y;
 
-    if (row_num > N) return;
+    if (row_num >= N) return;
 
     int batch_num = blockIdx.x;
     int row_offset = batch_num * N * V + V * row_num;
@@ -44,7 +44,8 @@ __global__ void singleWarpRMS(
     // Calculate the RMS first
     // Do summation for each thread
     for (int i=tx; i<V;i += blockDim.x) {
-        sumVal += data[row_offset + i];
+        float val = data[row_offset + i];
+        sumVal += val * val;
     }
     // Then for each thread combine the values
     // Since we only have a single warp, we can just do a xor sync once
@@ -112,8 +113,8 @@ int main() {
 
     cudaMemcpy(d_data, data, mat_size * sizeof(float), cudaMemcpyHostToDevice);
 
-    dim3 block_size(32, 32, 1);
-    dim3 grid(B, 1, 1);
+    dim3 block_size(32, 8, 1);
+    dim3 grid(B, (N + 7) / 8, 1);
 
     singleWarpRMS<<<grid, block_size>>>(
         d_data, d_out, B, N, V, eps, gamma);
