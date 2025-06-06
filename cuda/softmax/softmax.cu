@@ -15,7 +15,7 @@ B x N x V
 Only 4 tricks are used to reach PyTorch performance:
 1. Use warp level reduction to find the max value in a warp.
 2. Then use block level reduction to find the global max value
-3. Use float4 values to load 4 floats at a time and store 4 floats at a time
+3. Use float4 values to load 4 floats at a time and store 4  floats at a time
 4. Use pragmas to unroll the loops
 5. Suggested by GPT: Use cta.sync() and __restrict__ but it doesn't give any performance boost
 */
@@ -255,10 +255,11 @@ void launch_softmax(torch::Tensor data, torch::Tensor out, int version)
             THREADS_X *= 32;
         }
 
-        int THREADS_Y = 8;
-        if (V > 512) {
-            THREADS_Y = ceil(1024 / THREADS_X);
-        }
+        // int THREADS_Y = 8;
+        // if (V > 512) {
+        //     THREADS_Y = ceil(1024 / THREADS_X);
+        // }
+        const int THREADS_Y = 1;
         dim3 block(THREADS_X, THREADS_Y, 1);
         dim3 grid(B, (N + THREADS_Y - 1) / THREADS_Y, 1);
 

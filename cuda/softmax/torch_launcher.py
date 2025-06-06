@@ -26,6 +26,7 @@ except Exception as err:
     print(
         f"Absolute error: mean, {diff.mean()} max, {diff.max()}, min {diff.min()}"
     )
+    raise err
 
 x_vals = [2**i for i in range(1, 10)]
 x_vals += [i for i in range(1024, 2**18+1, 2048)]
@@ -94,5 +95,5 @@ plt.legend()
 plt.tight_layout()
 
 # Save the new plot
-plot_path_raw = "softmax_kernel_performance_raw.png"
+plot_path_raw = "fixed_batch_rows_val_cols.png"
 plt.savefig(plot_path_raw)

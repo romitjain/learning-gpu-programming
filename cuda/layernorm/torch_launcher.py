@@ -15,23 +15,20 @@ rms_cuda_kernel = torch.utils.cpp_extension.load(
 
 x = torch.randn((2, 1024, 1024), device=device)
 out_cuda = torch.empty_like(x)
-rms_cuda_kernel.rms_forward(x, out_cuda, 1e-6, 1.0, 1)
+rms_cuda_kernel.rms_forward(x, out_cuda, 1e-6, 1.0, 2) # type: ignore
 
-rms = torch.nn.RMSNorm(
-    normalized_shape=x.shape[-1:],
-    eps=1e-6,
-    device=device
-)
-out_torch = rms(x)
+out_torch = torch.nn.functional.rms_norm(x, eps=1e-6, normalized_shape=x.shape[-1:])
+
+diff = abs(out_cuda - out_torch)
 
 try:
     assert torch.allclose(out_cuda, out_torch), "Cuda kernel implementation is not correct!"
-    print("Cuda kernel test passed!")
+    print(f"Cuda kernel test passed!, abs diff: {diff.mean()}")
 except Exception as err:
-    diff = abs(out_cuda - out_torch)
     print(
         f"Absolute error: mean, {diff.mean()} max, {diff.max()}, min {diff.min()}"
     )
+    raise err
 
 x_vals = [2**i for i in range(1, 10)]
 x_vals += [i for i in range(32, 2**18+1, 2048)]
@@ -46,15 +43,15 @@ print(f"Testing across {x_vals} vocab sizes")
         line_arg='provider',
         line_vals=[
             'cuda (single warp)',
-            # 'cuda (multi warp)',
+            'cuda (multi warp)',
             'torch',
         ],
         line_names=[
             "Cuda (Single warp)",
-            # "Cuda (Multi warp)",
+            "Cuda (Multi warp)",
             "Torch",
         ],
-        styles=[('blue', '-'), ('green', '-')],
+        styles=[('blue', '-'), ('red', '-'), ('green', '-')],
         ylabel="GB/s",
         plot_name="Performance (Memory bandwidth consumption) vs Dim size",
         args={'B': 1, 'N': 1024},
@@ -68,17 +65,19 @@ def benchmark(B, N, V, provider):
 
     if provider == 'cuda (single warp)':
         ms, min_ms, max_ms = triton.testing.do_bench(
-            lambda: rms_cuda_kernel.rms_forward(x, output_tensor, eps, 1.0, 1), quantiles=quantiles, warmup=20, rep=100
+            lambda: rms_cuda_kernel.rms_forward(x, output_tensor, eps, 1.0, 1), quantiles=quantiles, warmup=20, rep=100 # type: ignore
+        )
+    elif provider == 'cuda (multi warp)':
+        ms, min_ms, max_ms = triton.testing.do_bench(
+            lambda: rms_cuda_kernel.rms_forward(x, output_tensor, eps, 1.0, 2), quantiles=quantiles, warmup=20, rep=100 # type: ignore
         )
     elif provider == 'torch':
-        rms = torch.nn.RMSNorm(
-            normalized_shape=x.shape[-1:],
-            eps=eps,
-            device=device
-        )
         ms, min_ms, max_ms = triton.testing.do_bench(
-            lambda: rms(x), warmup=20, rep=100, quantiles=quantiles
-        )
+            lambda: torch.nn.functional.rms_norm(x, eps=eps, normalized_shape=x.shape[-1:]),
+            warmup=20,
+            rep=100,
+            quantiles=quantiles
+        ) # type: ignore
 
     def gbps(ms): return 2 * x.nelement() * \
         x.element_size() * 1e-9 / (ms * 1e-3)
@@ -92,7 +91,7 @@ df = benchmark.run(
 )
 
 plt.figure(figsize=(12, 6))
-for column in ["Cuda (Single warp)", "Torch"]:
+for column in ["Cuda (Single warp)", "Cuda (Multi warp)", "Torch"]:
     plt.plot(df["V"], df[column], marker='o', label=column)
 
 plt.xlabel("Vocab Size (V)")
